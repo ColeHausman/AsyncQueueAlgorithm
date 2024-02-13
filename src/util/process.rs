@@ -1,6 +1,5 @@
 use std::cmp::Ordering;
 use std::collections::VecDeque;
-use mpi::datatype::UserDatatype;
 use mpi::environment::Universe;
 use mpi::{Count, Rank, Address};
 use mpi::topology::SimpleCommunicator;
@@ -9,17 +8,26 @@ use crate::util::message_structs::{DeqReq, EnqReq, SafeUnsafeAck, VectorClock};
 use crate::util::confirmation_list::ConfirmationList;
 use crate::util::constants::{NUM_PROCS, ENQ_REQ, DEQ_REQ, ENQ_ACK, UNSAFE, SAFE};
 use mpi::traits::*;
+use futures::executor::block_on;
 use crate::util::update_ts::update_ts;
-use std::fmt;
-use std::mem::size_of;
+use std::{fmt, io, thread};
+use std::time::Duration;
 use crate::util::print_confirmation_lists::print_confirmation_lists;
 use crate::util::propagate_earlier_responses::propagate_earlier_responses;
+use chrono::Local;
+use futures::future::join_all;
+use std::sync::{Arc, Mutex};
 
 const PLACEHOLDER: u16 = 0xFFFC;
 
 // Define a custom error type for the out of range case
 #[derive(Debug)]
 struct OutOfRangeError;
+
+pub enum HandleDequeue {
+    Success((Rank, u16)),
+    NoResult,
+}
 
 impl fmt::Display for OutOfRangeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -30,12 +38,14 @@ impl fmt::Display for OutOfRangeError {
 // Implement the Error trait for the custom error type
 impl std::error::Error for OutOfRangeError {}
 
+#[derive(Clone)]
 pub struct Process {
     pub(crate) index: Rank, // stores process index
     pub(crate) vector_clock: VectorClock, // stores process vector clock
     pub(crate) lists: Vec<ConfirmationList>, // stores confirmation lists
     pub(crate) enq_count: u16, // stores number of enqueues
-    local_queue:VecDeque<(Rank, u16)>
+    local_queue:VecDeque<(Rank, u16)>,
+    formatted_strings:Vec<String>
 }
 
 impl Process {
@@ -47,7 +57,8 @@ impl Process {
             vector_clock: VectorClock([0; NUM_PROCS]),
             lists: Vec::new(), // holds confirmation lists
             enq_count, // counts num enqueues
-            local_queue: VecDeque::new() // initialize empty local queue
+            local_queue: VecDeque::new(), // initialize empty local queue
+            formatted_strings: Vec::new()
         }
     }
 
@@ -65,6 +76,21 @@ impl Process {
                 self.lists.insert(insert_position, confirmation_list);
             }
         }
+    }
+
+    pub(crate) fn remove_confirmation_list(&mut self, ts: &VectorClock) {
+        for (index, confirmation_list) in self.lists.iter().enumerate() {
+            if compare_ts_ord(&ts.0, &confirmation_list.ts) == Ordering::Equal {
+                self.lists.remove(index);
+                break; // Shouldnt have duplicate ts
+            }
+        }
+    }
+
+    pub(crate) fn print_execution(&mut self) {
+        let combined_string = self.formatted_strings.join("\n");
+        let execution_output = format!("========== Execution for process {} ===========\n", self.index) + &*combined_string + "================================\n";
+        println!("{}", execution_output);
     }
 
     fn enqueue(&mut self, universe: &Universe, invoking: Rank, val: u16) -> Result<(), Box<dyn std::error::Error>> {
@@ -87,7 +113,9 @@ impl Process {
                 rank: self.index,
                 timestamp: self.vector_clock};
 
-            println!("Root {} broadcasting value: {:?}.", self.index, new_enq_req);
+            //println!("Root {} Requesting to enqueue {} at ts {:?}",
+                     //self.index, new_enq_req.value, new_enq_req.timestamp);
+            self.formatted_strings.push(format!("Root {} Requesting to enqueue {} at ts {:?}",self.index, new_enq_req.value, new_enq_req.timestamp));
         } else {
             new_enq_req = EnqReq{
                 message: PLACEHOLDER,
@@ -103,7 +131,8 @@ impl Process {
         });
 
         // Recv
-        println!("Rank {} recv: {:?}.", world.rank(), new_enq_req);
+        //println!("Rank {} recv: {:?}. at time: {}", world.rank(), new_enq_req, Local::now());
+        self.formatted_strings.push(format!("Rank {} recv: {:?}. at time: {}", world.rank(), new_enq_req, Local::now()));
 
         // for debug purposes we enq the rank with the value
         self.local_queue.push_back((new_enq_req.rank, new_enq_req.value));
@@ -111,9 +140,9 @@ impl Process {
 
         for confirmationList in &mut self.lists {
             match compare_ts(&confirmationList.ts, &self.vector_clock.0) {
-                ComparisonResult::Less | ComparisonResult::StrictlyLess // accept less or strict less
+                ComparisonResult::Less | ComparisonResult::StrictlyLess // accept less or strictly less
                 => confirmationList.response_list[self.index as usize] = 1,
-                _ => {} // im not handling the other orderings, ignore
+                _ => {}
             }
         }
 
@@ -123,27 +152,23 @@ impl Process {
 
             // Note gather does some work for us here and waits until all processes respond
             world.process_at_rank(self.index).gather_into_root(&i, &mut recv_enq_responses[..]);
-
-            let formatted = vec![String::from("ENQ_ACK"); recv_enq_responses.len()-1];
-            println!("process {} received {:?}", self.index, formatted);
         }else {
             world.process_at_rank(invoking).gather_into(&i);
         }
 
-        println!("Process {} finished", self.index);
         Ok(())
     }
 
     // Wrapper for enqueue to handle errors
     pub(crate) fn Enqueue(&mut self, universe: &Universe, invoking: Rank, val: u16) {
-        let result = self.enqueue(universe, invoking, val);
+        let result = self.enqueue(universe, invoking, val).await;
         match result {
             Ok(()) => {},
             Err(err) => eprintln!("Error: {}", err)
         }
     }
 
-    pub(crate) fn dequeue(&mut self, universe: &Universe, invoking: Rank) {
+    fn dequeue(&mut self, universe: &Universe, invoking: Rank) -> Result<HandleDequeue, io::Error> {
         let world = universe.world();
         let root_process = world.process_at_rank(invoking);
 
@@ -161,14 +186,15 @@ impl Process {
                 rank: -1,
                 timestamp: VectorClock([-1; NUM_PROCS])
             };
-
         }
+
         // Send
         mpi::request::scope(|scope| {
             root_process.immediate_broadcast_into(scope, &mut new_deq_req).wait();
         });
 
-        println!(" Process {} recv: {:?} with curr ts {:?}", self.index, new_deq_req, self.vector_clock);
+        //println!(" Process {} recv: {:?} with curr ts {:?} at time {}", self.index, new_deq_req, self.vector_clock, Local::now());
+        self.formatted_strings.push(format!(" Process {} recv: {:?} with curr ts {:?} at time {}", self.index, new_deq_req, self.vector_clock, Local::now()));
 
         self.lists.push(
             ConfirmationList::new(new_deq_req.timestamp.0)
@@ -185,7 +211,8 @@ impl Process {
                 response = SafeUnsafeAck{
                     message:UNSAFE,
                     rank: self.index,
-                    timestamp: new_deq_req.timestamp};
+                    timestamp: new_deq_req.timestamp
+                };
             }
             _ => {  // Otherwise send safe
                 response = SafeUnsafeAck{
@@ -197,23 +224,35 @@ impl Process {
         }
 
         // Send all unsafe/safe lists to all
-        let mut safe_unsafe_responses: [SafeUnsafeAck; NUM_PROCS] = [response; NUM_PROCS]; // holds safe unsafe responses
+        let mut safe_unsafe_responses: [SafeUnsafeAck; NUM_PROCS] = [response; NUM_PROCS];
         world.all_gather_into(&response, &mut safe_unsafe_responses[..]);
-        println!("Process {} recv {:?}", self.index, safe_unsafe_responses);
+        //println!("Process {} recv {:?} at time {}", self.index, safe_unsafe_responses, Local::now());
+        self.formatted_strings.push(format!("Process {} recv {:?} at time {}", self.index, safe_unsafe_responses, Local::now()));
 
         if !safe_unsafe_responses.iter().any(|item| item.message == UNSAFE){
             // all responses safe, dequeue
-            if let Some(value) = self.local_queue.pop_front() {
-                println!("Process {} dequeued value {:?}", self.index, value);
+            if let Some((rank, value)) = self.local_queue.pop_front() {
+                self.remove_confirmation_list(&new_deq_req.timestamp);
+                return Ok::<HandleDequeue, io::Error>(HandleDequeue::Success((rank, value)));
             }
         }
 
         for response in safe_unsafe_responses.iter(){
-            self.handle_unsafe(*response);
+            match self.handle_unsafe(*response) {
+                Ok::<HandleDequeue, io::Error>(HandleDequeue::Success((rank, value))) => {
+                    return Ok::<HandleDequeue, io::Error>(HandleDequeue::Success((rank, value)));
+                }
+                Err(E) => {
+                    return Err(io::Error::new(io::ErrorKind::Other, E));
+                }
+                _ => {}
+            }
         }
+
+        Ok::<HandleDequeue, io::Error>(HandleDequeue::NoResult)
     }
 
-    fn handle_unsafe(&mut self, safe_unsafe_response: SafeUnsafeAck) {
+    fn handle_unsafe(&mut self, safe_unsafe_response: SafeUnsafeAck) -> Result<HandleDequeue, io::Error> {
         if safe_unsafe_response.message == UNSAFE {
             let mut contains_req = false;
             for confirmation_list in &mut self.lists.iter() {
@@ -260,13 +299,31 @@ impl Process {
                         pos += 1;
                     }
                 }
-                if let Some(value) = self.local_queue.remove(pos){
-                    println!("Process {} dequeuing {:?}", self.index, value);
-                } else{
-                    println!("Process {} failed to dequeue index {}", self.index, pos);
+                return if let Some((rank, value)) = self.local_queue.remove(pos) {
+                    Ok::<HandleDequeue, io::Error>(HandleDequeue::Success((rank, value)))
+                } else {
+                    Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        format!("Process {} failed to dequeue index {}, local queue: {:?}",
+                                self.index, pos, self.local_queue))
+                    )
                 }
 
             }
+        }
+        Ok(HandleDequeue::NoResult)
+    }
+
+    pub(crate) fn Dequeue(&mut self, universe: &Universe, invoking: Rank) -> Option<(Rank, u16)> {
+        match self.dequeue(universe, invoking) {
+            Ok::<HandleDequeue, io::Error>(HandleDequeue::Success((rank, value))) => {
+                Some((rank, value)) // Note: Removed the semicolon here
+            }
+            Err(E) => {
+                eprintln!("{}", E);
+                None
+            }
+            _ => None
         }
     }
 }

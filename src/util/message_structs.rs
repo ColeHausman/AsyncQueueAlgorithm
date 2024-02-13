@@ -38,7 +38,7 @@ fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     )
 }
 }
-
+#[derive(Clone, Copy)]
 pub struct EnqReq {
     pub message: u16,
     pub value: u16,
