@@ -4,6 +4,7 @@ use crate::util::constants::NUM_PROCS;
 pub struct ConfirmationList {
     pub(crate) response_list: [i32; NUM_PROCS],
     pub(crate) ts: [i32; NUM_PROCS],
+    pub(crate) handled: bool
 }
 
 impl ConfirmationList {
@@ -13,6 +14,7 @@ impl ConfirmationList {
         Self {
             response_list,
             ts: dequeue_ts,
+            handled: false
         }
     }
 }
