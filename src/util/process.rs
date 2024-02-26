@@ -220,7 +220,7 @@ impl Process {
             return OpNextAction::default();
         }
 
-        let mut recv_op: QueueOpReq = QueueOpReq { message: 0, value: 0, sender: 0, receiver: 0, timestamp: VectorClock([0; NUM_PROCS]) };
+        let mut recv_op = QueueOpReq::default();
 
         let world = universe.world();
         mpi::request::scope(|scope| {
@@ -240,6 +240,8 @@ impl Process {
             }
         });
 
+        println!("{:?}", recv_op);
+
         world.barrier(); // All processes reach the barrier
         if self.index == op.receiver {
             return self.handle_queue_op(recv_op);
@@ -248,12 +250,38 @@ impl Process {
         OpNextAction::default()
     }
 
+    pub(crate) fn execute_async_send_receive_2(&mut self, universe: &Universe, op: QueueOpReq) -> OpNextAction {
+        let mut recv_op = VectorClock::default();
+
+        let world = universe.world();
+        mpi::request::scope(|scope| {
+            if self.index == op.sender {
+                let mut sreq = world.process_at_rank(op.receiver)
+                    .immediate_send(scope, &op.timestamp);
+                loop {
+                    match sreq.test() {
+                        Ok(_) => break,
+                        Err(req) => sreq = req,
+                    }
+                }
+            } else if world.rank() == op.receiver {
+                let rreq = WaitGuard::from(world.process_at_rank(op.sender)
+                    .immediate_receive_into(scope, &mut recv_op));
+                drop(rreq);
+            }
+        });
+
+        world.barrier(); // All processes reach the barrier
+
+        OpNextAction::default()
+    }
+
     pub(crate) fn testing(&mut self, universe: &Universe) {
         let val = QueueOpReq {
             message: 0,
             value: 9,
-            sender: 0,
-            receiver: 2,
+            sender: 2,
+            receiver: 3,
             timestamp: VectorClock([0,1,2,3])
         };
         self.execute_async_send_receive(universe, val);
@@ -295,14 +323,11 @@ impl Process {
                     receiver: op.receiver,
                     timestamp: self.message_buffer[buff_index].ts,
                 });
-                if self.message_buffer[buff_index].value == 9 {
-                    println!("PROCESS {} SENDING TS {:?} TO {}", self.index, self.message_buffer[buff_index].ts, op.receiver);
-                }
             }
         }
 
         //println!("{} {:?}", self.index, self.message_buffer);
-        //println!("{} {:?}", self.index, self.local_queue);
+        println!("{} {:?}", self.index, self.local_queue);
     }
 
 

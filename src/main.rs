@@ -77,9 +77,9 @@ fn main() {
 
 
 
-    //p_i.do_enq_with_q(&universe, &mut queue);
+    p_i.do_enq_with_q(&universe, &mut queue);
 
-    p_i.testing(&universe);
+    //p_i.testing(&universe);
 
 
     /*
