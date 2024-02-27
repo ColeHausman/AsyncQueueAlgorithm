@@ -4,7 +4,7 @@ use mpi::environment::Universe;
 use mpi::{Rank};
 use mpi::topology::SimpleCommunicator;
 use crate::util::compare_ts::{compare_ts, compare_ts_ord, ComparisonResult, contains_all_zeros};
-use crate::util::message_structs::{DeqReq, EnqReq, QueueOpReq, SafeUnsafeAck, VectorClock};
+use crate::util::message_structs::{DeqReq, EnqReq, QueueOpReq, SafeUnsafeAck, VectorClock, OpNextAction};
 use crate::util::confirmation_list::ConfirmationList;
 use crate::util::constants::{NUM_PROCS, ENQ_REQ, DEQ_REQ, ENQ_ACK};
 use crate::util::constants::{UNSAFE, SAFE, ENQ_INVOKE, DEQ_INVOKE, SAFE_UNSAFE};
@@ -25,23 +25,6 @@ struct OutOfRangeError;
 pub enum HandleDequeue {
     Success((Rank, u16)),
     NoResult,
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct OpNextAction {
-    pub message: u16,
-    pub value: u16,
-    pub invoker: Rank,
-    pub ts: VectorClock,
-}
-
-pub fn find_index_with_matching_ts(actions: &[OpNextAction], target_ts: &VectorClock) -> Option<usize> {
-    for (index, action) in actions.iter().enumerate() {
-        if compare_ts_ord(&action.ts.0, &target_ts.0) == Ordering::Equal {
-            return Some(index);
-        }
-    }
-    None // No matching VectorClock found
 }
 
 impl fmt::Display for OutOfRangeError {
