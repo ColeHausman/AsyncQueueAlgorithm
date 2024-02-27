@@ -1,22 +1,19 @@
 use std::cmp::Ordering;
 use std::collections::VecDeque;
 use mpi::environment::Universe;
-use mpi::{Count, Rank, Address};
+use mpi::{Rank};
 use mpi::topology::SimpleCommunicator;
 use crate::util::compare_ts::{compare_ts, compare_ts_ord, ComparisonResult, contains_all_zeros};
-use crate::util::message_structs::{DeqReq, EnqReq, QueueOpReq, SafeUnsafeAck, VectorClock, CompletionSignal, MyArc};
+use crate::util::message_structs::{DeqReq, EnqReq, QueueOpReq, SafeUnsafeAck, VectorClock};
 use crate::util::confirmation_list::ConfirmationList;
-use crate::util::constants::{NUM_PROCS, ENQ_REQ, DEQ_REQ, ENQ_ACK, UNSAFE, SAFE, ENQ_INVOKE, DEQ_INVOKE};
+use crate::util::constants::{NUM_PROCS, ENQ_REQ, DEQ_REQ, ENQ_ACK};
+use crate::util::constants::{UNSAFE, SAFE, ENQ_INVOKE, DEQ_INVOKE, SAFE_UNSAFE};
 use mpi::traits::*;
-use futures::executor::block_on;
 use crate::util::update_ts::update_ts;
-use std::{fmt, io, thread};
+use std::{fmt, io};
 use std::time::Duration;
-use crate::util::print_confirmation_lists::print_confirmation_lists;
 use crate::util::propagate_earlier_responses::propagate_earlier_responses;
 use chrono::Local;
-use futures::future::join_all;
-use std::sync::{Arc, Mutex};
 use mpi::request::WaitGuard;
 
 const PLACEHOLDER: u16 = 0xFFFC;
@@ -62,10 +59,9 @@ pub struct Process {
     pub(crate) vector_clock: VectorClock, // stores process vector clock
     pub(crate) lists: Vec<ConfirmationList>, // stores confirmation lists
     pub(crate) enq_count: u16, // stores number of enqueues
-    pub(crate) local_queue:VecDeque<(Rank, u16, VectorClock)>,
-    formatted_strings:Vec<String>,
-    message_buffer: [OpNextAction; NUM_PROCS],
-    // TODO add a message_buffer: Vec<OpNextAction> length NUM_PROCS
+    local_queue:VecDeque<(Rank, u16, VectorClock)>, // stores a local copy of the queue sorted by ts
+    formatted_strings:Vec<String>, // for debugging
+    message_buffer: [OpNextAction; NUM_PROCS], // buffer to hold up to NUM_PROCS incoming messages
 }
 
 impl Process {
@@ -80,6 +76,22 @@ impl Process {
             local_queue: VecDeque::new(), // initialize empty local queue
             formatted_strings: Vec::new(),
             message_buffer: Default::default()
+        }
+    }
+
+    pub(crate) fn enqueue_local(&mut self, item: (Rank, u16, VectorClock)) {
+        let ts_to_insert = &item.2.0;
+
+        // Use binary_search_by with the custom comparator
+        match self.local_queue.binary_search_by(|&(_, _, ref ts)| compare_ts_ord(&ts.0, ts_to_insert)) {
+            Ok(insert_position) => {
+                // Insert at the correct position
+                self.local_queue.insert(insert_position, item);
+            }
+            Err(insert_position) => {
+                // If binary_search returns Err, insert at the calculated position
+                self.local_queue.insert(insert_position, item);
+            }
         }
     }
 
@@ -132,7 +144,7 @@ impl Process {
             ENQ_REQ => {
                 println!("{} got enq req {:?}", self.index, op);
                 update_ts(&mut self.vector_clock.0, &op.timestamp.0);
-                self.local_queue.push_back((op.sender, op.value, op.timestamp));
+                self.enqueue_local((op.sender, op.value, op.timestamp));
 
                 for confirmationList in &mut self.lists {
                     match compare_ts(&confirmationList.ts, &self.vector_clock.0) {
@@ -147,28 +159,36 @@ impl Process {
                 println!("{} got enq ack", self.index);
                 self.enq_count += 1;
                 if self.enq_count == NUM_PROCS as u16 {
-                    self.local_queue.push_back((self.index, op.value, self.message_buffer[self.index as usize].ts));
+                    self.enqueue_local((self.index, op.value, self.message_buffer[self.index as usize].ts));
                     println!("Process {} finished enqueue", self.index);
                 }
                 res = OpNextAction{message: 9, value: op.value, invoker: self.index, ts: op.timestamp}
             }
             DEQ_INVOKE => {
+                println!("Process {} invoking deq", self.index);
                 self.vector_clock.0[self.index as usize] += 1;
                 res = OpNextAction{message: DEQ_REQ, value: op.value, invoker: self.index, ts: self.vector_clock}
             }
             DEQ_REQ => {
                 update_ts(&mut self.vector_clock.0, &op.timestamp.0);
-                match compare_ts(&op.timestamp.0, &self.vector_clock.0) {
-                    ComparisonResult::StrictlyLess if !contains_all_zeros(&op.timestamp.0) => {
+                println!("Process {} recv deq_req with ts: {:?} self: {:?}", self.index, op.timestamp.0, self.vector_clock.0);
+                match compare_ts_ord(&op.timestamp.0, &self.vector_clock.0) {
+                    Ordering::Less  if !contains_all_zeros(&op.timestamp.0)=> {
                         // unsafe
-                        res = OpNextAction{message: UNSAFE, value: op.value, invoker: self.index, ts: self.vector_clock}
+                        res = OpNextAction{message: UNSAFE, value: op.value, invoker: op.sender, ts: op.timestamp}
                     }
                     _ => {  // safe
-                        res = OpNextAction{message: SAFE, value: op.value, invoker: self.index, ts: self.vector_clock}
+                        res = OpNextAction{message: SAFE, value: op.value, invoker: op.sender, ts: op.timestamp}
                     }
                 }
             }
             SAFE | UNSAFE => {
+                if op.message == UNSAFE {
+                    println!("Process {} recv UNSAFE from {}", self.index, op.sender);
+                }else{
+                    println!("Process {} recv SAFE from {}", self.index, op.sender);
+                }
+
                 let mut contains_req = false;
                 for confirmation_list in &mut self.lists.iter() {
                     match compare_ts_ord(&confirmation_list.ts, &op.timestamp.0) {
@@ -193,18 +213,26 @@ impl Process {
                 }
 
                 propagate_earlier_responses(&mut self.lists);
+                let ret_message:u16 = if op.message == UNSAFE {UNSAFE} else {SAFE};
 
-                for confirmation_list in self.lists.iter() {
-                    if !confirmation_list.response_list.contains(&0) {
+                for confirmation_list in self.lists.iter_mut() {
+                    if !confirmation_list.response_list.contains(&0) && !confirmation_list.handled {
                         let mut pos: usize = 0;
                         for response in confirmation_list.response_list.iter() {
                             if *response == 2 {
                                 pos += 1;
                             }
                         }
-                        return OpNextAction{message: self.local_queue.remove(pos).unwrap().1, value: op.value, invoker: self.index, ts: self.vector_clock};
+                        confirmation_list.handled = true;
+                        // TODO this deq_val needs to be option type to allow bottom
+                        let deq_val = self.local_queue.remove(pos).unwrap().1;
+                        println!("Process{} got {:?}", self.index, deq_val);
+
+                        return OpNextAction{message: ret_message, value: deq_val, invoker: self.index, ts: self.vector_clock};
                     }
                 }
+                return OpNextAction{message: ret_message, value: op.value, invoker: self.index, ts: self.vector_clock};
+
             }
             _ => {
                 res = OpNextAction{message: 0, value: op.value, invoker: self.index, ts: self.vector_clock}
@@ -215,7 +243,7 @@ impl Process {
 
     pub(crate) fn execute_async_send_receive(&mut self, universe: &Universe, op: QueueOpReq) -> OpNextAction {
         if (op.receiver == op.sender)  && self.index == op.sender {
-            return self.handle_queue_op(op);
+            return self.handle_queue_op(op); // dont need to use MPI to send to self
         } else if op.receiver == op.sender { // do nothing
             return OpNextAction::default();
         }
@@ -240,8 +268,6 @@ impl Process {
             }
         });
 
-        println!("{:?}", recv_op);
-
         world.barrier(); // All processes reach the barrier
         if self.index == op.receiver {
             return self.handle_queue_op(recv_op);
@@ -250,56 +276,27 @@ impl Process {
         OpNextAction::default()
     }
 
-    pub(crate) fn execute_async_send_receive_2(&mut self, universe: &Universe, op: QueueOpReq) -> OpNextAction {
-        let mut recv_op = VectorClock::default();
-
-        let world = universe.world();
-        mpi::request::scope(|scope| {
-            if self.index == op.sender {
-                let mut sreq = world.process_at_rank(op.receiver)
-                    .immediate_send(scope, &op.timestamp);
-                loop {
-                    match sreq.test() {
-                        Ok(_) => break,
-                        Err(req) => sreq = req,
-                    }
-                }
-            } else if world.rank() == op.receiver {
-                let rreq = WaitGuard::from(world.process_at_rank(op.sender)
-                    .immediate_receive_into(scope, &mut recv_op));
-                drop(rreq);
-            }
-        });
-
-        world.barrier(); // All processes reach the barrier
-
-        OpNextAction::default()
-    }
-
-    pub(crate) fn testing(&mut self, universe: &Universe) {
-        let val = QueueOpReq {
-            message: 0,
-            value: 9,
-            sender: 2,
-            receiver: 3,
-            timestamp: VectorClock([0,1,2,3])
-        };
-        self.execute_async_send_receive(universe, val);
-    }
-
     pub(crate) fn do_enq_with_q(&mut self, universe: &Universe, queue: &mut VecDeque<QueueOpReq>) {
-        while let Some(op) = queue.pop_front() {
+        while let Some(mut op) = queue.pop_front() {
             let buff_index: usize;
             match op.message {
                 ENQ_INVOKE => {
                     self.message_buffer[op.sender as usize].value = op.value;
                     buff_index = op.sender as usize;
                 }
-                ENQ_REQ => {
+                ENQ_REQ | DEQ_REQ => {
                     buff_index = op.sender as usize;
                 }
                 ENQ_ACK => {
                     buff_index = op.receiver as usize;
+                }
+                DEQ_INVOKE => {
+                    buff_index = op.sender as usize;
+                }
+                SAFE_UNSAFE => {
+                    buff_index = op.sender as usize; // processes should check if sender's buffer contains SAFE or UNSAFE
+                    op.message = if self.message_buffer[buff_index].message == UNSAFE
+                    {UNSAFE} else {SAFE}
                 }
                 _ => {
                     buff_index = 0;
@@ -314,7 +311,6 @@ impl Process {
                     receiver: op.receiver,
                     timestamp: self.message_buffer[buff_index].ts,
                 });
-                //println!("PROCESS{} WRITING {} {:?} TO POS {}", self.index, self.message_buffer[buff_index].value, self.message_buffer[buff_index].ts, buff_index);
             } else {
                 self.execute_async_send_receive(universe, QueueOpReq{
                     message: op.message,
@@ -325,9 +321,8 @@ impl Process {
                 });
             }
         }
-
-        //println!("{} {:?}", self.index, self.message_buffer);
         println!("{} {:?}", self.index, self.local_queue);
+        //println!("{} {:?}", self.index, self.message_buffer);
     }
 
 

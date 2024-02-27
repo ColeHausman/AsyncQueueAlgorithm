@@ -7,3 +7,5 @@ pub const UNSAFE: u16 = 3;
 pub const SAFE: u16 = 4;
 pub const ENQ_INVOKE: u16 = 5;
 pub const DEQ_INVOKE: u16 = 6;
+
+pub const SAFE_UNSAFE: u16 = 7;

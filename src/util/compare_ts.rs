@@ -43,9 +43,7 @@ pub fn compare_ts(vec_i: &[i32; NUM_PROCS], vec_j: &[i32; NUM_PROCS]) -> Compari
 
 
 
-/// This function is just here because Its easier to do sorting with standard Ordering
-/// and idc about strict or regular less than in ts sorting, its one or the other
-/// and im too lazy to rewrite the sorter for now
+/// compares timestamps for sorting functions
 ///
 /// # Arguments
 ///

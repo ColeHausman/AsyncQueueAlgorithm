@@ -1,11 +1,5 @@
-//! These define the equivalent MPI datatype which we have to do in order
-//! to send arrays which we need to do because vector timestamps
-//! `Equivalence` is the only required trait so that is all I implemented
-
 use std::mem::{size_of};
-use std::os::raw::c_void;
-use std::sync::{Arc, Condvar, Mutex};
-use mpi::datatype::{AsDatatype, BufferMut, Collection, Equivalence, PointerMut, UserDatatype};
+use mpi::datatype::{AsDatatype, Equivalence, UserDatatype};
 use mpi::{Address, Count, Rank};
 use crate::util::numeric_encodings::req_encoding_to_string;
 use crate::util::constants::NUM_PROCS;
@@ -256,88 +250,6 @@ unsafe impl Equivalence for QueueOpReq {
             ts_equivalent.as_ref(), // use temporary reference for lifetime requirements
         ];
 
-        UserDatatype::structured(&counts, &displacements, &types)
-    }
-}
-
-#[derive(Debug)]
-pub struct MutexWrapper<T> {
-    pub mutex: Arc<Mutex<T>>,
-}
-
-// Implement Equivalence for MutexWrapper
-unsafe impl<T> Equivalence for MutexWrapper<T> {
-    type Out = UserDatatype;
-
-    fn equivalent_datatype() -> Self::Out {
-        let counts = [1 as Count];
-        let displacements = [0 as Address];
-        let types = [Count::equivalent_datatype()];
-        UserDatatype::structured(&counts, &displacements, &types)
-    }
-}
-
-
-// Define your own reference-counting type similar to Arc
-pub struct MyArc<T>(pub std::sync::Arc<T>);
-
-#[derive(Debug)]
-pub struct CondvarWrapper {
-    pub condvar: Condvar,
-    pub mutex: Arc<Mutex<bool>>,
-}
-// Implement Equivalence for CondvarWrapper
-unsafe impl Equivalence for CondvarWrapper {
-    type Out = UserDatatype;
-
-    fn equivalent_datatype() -> Self::Out {
-        let counts = [1 as Count];
-        let displacements = [0 as Address];
-        let types = [Count::equivalent_datatype()];
-        UserDatatype::structured(&counts, &displacements, &types)
-    }
-}
-
-// Define CompletionSignal using CondvarWrapper
-pub(crate) struct CompletionSignal {
-    condvar: CondvarWrapper,
-}
-
-impl CompletionSignal {
-    pub fn new() -> Self {
-        let mutex = Arc::new(Mutex::new(true)); // Initially set to true
-        let condvar = Condvar::new();
-        CompletionSignal {
-            condvar: CondvarWrapper {
-                condvar,
-                mutex,
-            },
-        }
-    }
-
-    // Wait for the completion signal
-    pub fn wait(&self) {
-        let mut completed = self.condvar.mutex.lock().unwrap();
-        while !*completed {
-            completed = self.condvar.condvar.wait(completed).unwrap();
-        }
-    }
-
-    // Signal completion
-    pub fn signal_completion(&self) {
-        let mut completed = self.condvar.mutex.lock().unwrap();
-        *completed = true;
-        self.condvar.condvar.notify_all();
-    }
-}
-
-unsafe impl Equivalence for MyArc<CompletionSignal> {
-    type Out = UserDatatype;
-
-    fn equivalent_datatype() -> Self::Out {
-        let counts = [1 as Count];
-        let displacements = [0 as Address];
-        let types = [Count::equivalent_datatype()];
         UserDatatype::structured(&counts, &displacements, &types)
     }
 }

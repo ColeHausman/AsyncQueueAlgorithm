@@ -3,8 +3,8 @@ mod util;
 use std::collections::VecDeque;
 use mpi::traits::*;
 use std::error::Error;
-use crate::util::constants::{ENQ_ACK, ENQ_INVOKE, ENQ_REQ, NUM_PROCS};
-use crate::util::message_structs::{QueueOpReq, VectorClock, CompletionSignal, MyArc};
+use crate::util::constants::{DEQ_INVOKE, DEQ_REQ, ENQ_ACK, ENQ_INVOKE, ENQ_REQ, NUM_PROCS, SAFE_UNSAFE};
+use crate::util::message_structs::{QueueOpReq, VectorClock};
 use std::sync::{Arc, Mutex, Condvar};
 use crate::util::process::{OpNextAction, Process};
 use mpi::{Address, Count, Rank};
@@ -22,58 +22,107 @@ fn main() {
     //p_i.do_enq(&universe, 0, 3);
 
     let mut queue: VecDeque<QueueOpReq> = VecDeque::new();
+
     /*
     queue.push_back(QueueOpReq{message: ENQ_INVOKE, value: 3, sender: 0, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
     queue.push_back(QueueOpReq{message: ENQ_REQ, value: 0, sender: 0, receiver: 1, timestamp: VectorClock([0;NUM_PROCS])});
     queue.push_back(QueueOpReq{message: ENQ_REQ, value: 0, sender: 0, receiver: 2, timestamp: VectorClock([0;NUM_PROCS])});
-
+    queue.push_back(QueueOpReq{message: ENQ_REQ, value: 0, sender: 0, receiver: 3, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: ENQ_ACK, value: 0, sender: 3, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
     queue.push_back(QueueOpReq{message: ENQ_ACK, value: 0, sender: 2, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
-    queue.push_back(QueueOpReq{message: ENQ_INVOKE, value: 6, sender: 1, receiver: 1, timestamp: VectorClock([0;NUM_PROCS])});
-    queue.push_back(QueueOpReq{message: ENQ_REQ, value: 0, sender: 1, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: ENQ_ACK, value: 0, sender: 1, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
 
+
+    queue.push_back(QueueOpReq{message: DEQ_INVOKE, value: 0, sender: 3, receiver: 3, timestamp: VectorClock([0;NUM_PROCS])});
+
+    queue.push_back(QueueOpReq{message: DEQ_REQ, value: 0, sender: 3, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: ENQ_INVOKE, value: 6, sender: 1, receiver: 1, timestamp: VectorClock([0;NUM_PROCS])});
+
+    queue.push_back(QueueOpReq{message: DEQ_REQ, value: 0, sender: 3, receiver: 1, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: DEQ_REQ, value: 0, sender: 3, receiver: 2, timestamp: VectorClock([0;NUM_PROCS])});
+
+    queue.push_back(QueueOpReq{message: ENQ_REQ, value: 0, sender: 1, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
     queue.push_back(QueueOpReq{message: ENQ_REQ, value: 0, sender: 1, receiver: 2, timestamp: VectorClock([0;NUM_PROCS])});
     queue.push_back(QueueOpReq{message: ENQ_REQ, value: 0, sender: 1, receiver: 3, timestamp: VectorClock([0;NUM_PROCS])});
 
-    queue.push_back(QueueOpReq{message: ENQ_ACK, value: 0, sender: 0, receiver: 1, timestamp: VectorClock([0;NUM_PROCS])});
-    queue.push_back(QueueOpReq{message: ENQ_ACK, value: 0, sender: 2, receiver: 1, timestamp: VectorClock([0;NUM_PROCS])});
-    queue.push_back(QueueOpReq{message: ENQ_ACK, value: 0, sender: 3, receiver: 1, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: DEQ_REQ, value: 0, sender: 3, receiver: 3, timestamp: VectorClock([0;NUM_PROCS])});
 
-    queue.push_back(QueueOpReq{message: ENQ_ACK, value: 0, sender: 1, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
-    queue.push_back(QueueOpReq{message: ENQ_REQ, value: 0, sender: 0, receiver: 3, timestamp: VectorClock([0;NUM_PROCS])});
-    queue.push_back(QueueOpReq{message: ENQ_ACK, value: 0, sender: 3, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: ENQ_ACK, value: 0, sender: 3, receiver: 1, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: ENQ_ACK, value: 0, sender: 2, receiver: 1, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: ENQ_ACK, value: 0, sender: 0, receiver: 1, timestamp: VectorClock([0;NUM_PROCS])});
+
+
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 0, receiver: 3, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 1, receiver: 3, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 2, receiver: 3, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 3, receiver: 3, timestamp: VectorClock([0;NUM_PROCS])});
+
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 0, receiver: 2, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 1, receiver: 2, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 3, receiver: 2, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 2, receiver: 2, timestamp: VectorClock([0;NUM_PROCS])});
+
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 0, receiver: 1, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 2, receiver: 1, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 3, receiver: 1, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 1, receiver: 1, timestamp: VectorClock([0;NUM_PROCS])});
+
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 2, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 1, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 3, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 0, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
 
 
      */
-
-
+    queue.push_back(QueueOpReq{message: ENQ_INVOKE, value: 8, sender: 0, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: ENQ_REQ, value: 0, sender: 0, receiver: 1, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: ENQ_REQ, value: 0, sender: 0, receiver: 2, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: ENQ_REQ, value: 0, sender: 0, receiver: 3, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: ENQ_ACK, value: 0, sender: 3, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: ENQ_ACK, value: 0, sender: 2, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: ENQ_ACK, value: 0, sender: 1, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
 
     queue.push_back(QueueOpReq{message: ENQ_INVOKE, value: 3, sender: 0, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
     queue.push_back(QueueOpReq{message: ENQ_REQ, value: 0, sender: 0, receiver: 1, timestamp: VectorClock([0;NUM_PROCS])});
     queue.push_back(QueueOpReq{message: ENQ_REQ, value: 0, sender: 0, receiver: 2, timestamp: VectorClock([0;NUM_PROCS])});
-
-    queue.push_back(QueueOpReq{message: ENQ_ACK, value: 0, sender: 2, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
-    queue.push_back(QueueOpReq{message: ENQ_INVOKE, value: 6, sender: 1, receiver: 1, timestamp: VectorClock([0;NUM_PROCS])});
-    queue.push_back(QueueOpReq{message: ENQ_REQ, value: 0, sender: 1, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
-
-    queue.push_back(QueueOpReq{message: ENQ_REQ, value: 0, sender: 1, receiver: 2, timestamp: VectorClock([0;NUM_PROCS])});
-    queue.push_back(QueueOpReq{message: ENQ_REQ, value: 0, sender: 1, receiver: 3, timestamp: VectorClock([0;NUM_PROCS])});
-    queue.push_back(QueueOpReq{message: ENQ_INVOKE, value: 9, sender: 2, receiver: 2, timestamp: VectorClock([0;NUM_PROCS])});
-
-    queue.push_back(QueueOpReq{message: ENQ_ACK, value: 0, sender: 0, receiver: 1, timestamp: VectorClock([0;NUM_PROCS])});
-    queue.push_back(QueueOpReq{message: ENQ_ACK, value: 0, sender: 2, receiver: 1, timestamp: VectorClock([0;NUM_PROCS])});
-    queue.push_back(QueueOpReq{message: ENQ_ACK, value: 0, sender: 3, receiver: 1, timestamp: VectorClock([0;NUM_PROCS])});
-
-    queue.push_back(QueueOpReq{message: ENQ_REQ, value: 0, sender: 2, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
-    queue.push_back(QueueOpReq{message: ENQ_REQ, value: 0, sender: 2, receiver: 1, timestamp: VectorClock([0;NUM_PROCS])});
-    queue.push_back(QueueOpReq{message: ENQ_REQ, value: 0, sender: 2, receiver: 3, timestamp: VectorClock([0;NUM_PROCS])});
-
-    queue.push_back(QueueOpReq{message: ENQ_ACK, value: 0, sender: 1, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
     queue.push_back(QueueOpReq{message: ENQ_REQ, value: 0, sender: 0, receiver: 3, timestamp: VectorClock([0;NUM_PROCS])});
     queue.push_back(QueueOpReq{message: ENQ_ACK, value: 0, sender: 3, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: ENQ_ACK, value: 0, sender: 2, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: ENQ_ACK, value: 0, sender: 1, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
 
-    queue.push_back(QueueOpReq{message: ENQ_ACK, value: 0, sender: 0, receiver: 2, timestamp: VectorClock([0;NUM_PROCS])});
-    queue.push_back(QueueOpReq{message: ENQ_ACK, value: 0, sender: 1, receiver: 2, timestamp: VectorClock([0;NUM_PROCS])});
-    queue.push_back(QueueOpReq{message: ENQ_ACK, value: 0, sender: 3, receiver: 2, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: DEQ_INVOKE, value: 0, sender: 1, receiver: 1, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: DEQ_REQ, value: 0, sender: 1, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: DEQ_REQ, value: 0, sender: 1, receiver: 2, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: DEQ_REQ, value: 0, sender: 1, receiver: 3, timestamp: VectorClock([0;NUM_PROCS])});
+
+    queue.push_back(QueueOpReq{message: DEQ_INVOKE, value: 0, sender: 2, receiver: 2, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: DEQ_REQ, value: 0, sender: 2, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: DEQ_REQ, value: 0, sender: 2, receiver: 1, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: DEQ_REQ, value: 0, sender: 2, receiver: 2, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: DEQ_REQ, value: 0, sender: 2, receiver: 3, timestamp: VectorClock([0;NUM_PROCS])});
+
+    queue.push_back(QueueOpReq{message: DEQ_REQ, value: 0, sender: 1, receiver: 1, timestamp: VectorClock([0;NUM_PROCS])});
+
+
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 0, receiver: 3, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 0, receiver: 2, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 0, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 0, receiver: 1, timestamp: VectorClock([0;NUM_PROCS])});
+
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 1, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 1, receiver: 1, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 1, receiver: 2, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 1, receiver: 3, timestamp: VectorClock([0;NUM_PROCS])});
+
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 2, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 2, receiver: 1, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 2, receiver: 2, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 2, receiver: 3, timestamp: VectorClock([0;NUM_PROCS])});
+
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 3, receiver: 0, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 3, receiver: 1, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 3, receiver: 2, timestamp: VectorClock([0;NUM_PROCS])});
+    queue.push_back(QueueOpReq{message: SAFE_UNSAFE, value: 0, sender: 3, receiver: 3, timestamp: VectorClock([0;NUM_PROCS])});
 
 
 
