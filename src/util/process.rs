@@ -1,24 +1,25 @@
 use std::cmp::Ordering;
 use std::collections::VecDeque;
-use mpi::environment::Universe;
-use mpi::{Rank};
-use mpi::topology::SimpleCommunicator;
-use crate::util::compare_ts::{compare_ts, compare_ts_ord, ComparisonResult, contains_all_zeros};
-use crate::util::message_structs::{DeqReq, EnqReq, QueueOpReq, SafeUnsafeAck, VectorClock, OpNextAction};
-use crate::util::confirmation_list::ConfirmationList;
-use crate::util::constants::{NUM_PROCS, ENQ_REQ, DEQ_REQ, ENQ_ACK};
-use crate::util::constants::{UNSAFE, SAFE, ENQ_INVOKE, DEQ_INVOKE, SAFE_UNSAFE};
-use mpi::traits::*;
-use crate::util::update_ts::update_ts;
 use std::{fmt, io};
 use std::time::Duration;
-use crate::util::propagate_earlier_responses::propagate_earlier_responses;
-use chrono::Local;
+use mpi::environment::Universe;
+use mpi::Rank;
+use mpi::topology::SimpleCommunicator;
+use mpi::traits::*;
 use mpi::request::WaitGuard;
+use chrono::Local;
+use crate::util::compare_ts::{ compare_ts, compare_ts_ord, ComparisonResult, contains_all_zeros };
+use crate::util::message_structs::{ DeqReq, EnqReq, SafeUnsafeAck, VectorClock };
+use crate::util::message_structs::{ QueueOpReq, OpNextAction };
+use crate::util::confirmation_list::{ ConfirmationList,propagate_earlier_responses };
+use crate::util::confirmation_list::{ update_unsafes, print_confirmation_lists };
+use crate::util::constants::{ NUM_PROCS, ENQ_REQ, DEQ_REQ, ENQ_ACK };
+use crate::util::constants::{ UNSAFE, SAFE, ENQ_INVOKE, DEQ_INVOKE, SAFE_UNSAFE };
+use crate::util::update_ts::update_ts;
+
 
 const PLACEHOLDER: u16 = 0xFFFC;
 
-// Define a custom error type for the out of range case
 #[derive(Debug)]
 struct OutOfRangeError;
 
@@ -32,8 +33,6 @@ impl fmt::Display for OutOfRangeError {
         write!(f, "Process out of range world size!")
     }
 }
-
-// Implement the Error trait for the custom error type
 impl std::error::Error for OutOfRangeError {}
 
 #[derive(Clone)]
@@ -42,7 +41,7 @@ pub struct Process {
     pub(crate) vector_clock: VectorClock, // stores process vector clock
     pub(crate) lists: Vec<ConfirmationList>, // stores confirmation lists
     pub(crate) enq_count: u16, // stores number of enqueues
-    local_queue:VecDeque<(Rank, u16, VectorClock)>, // stores a local copy of the queue sorted by ts
+    pub(crate) local_queue:VecDeque<(Rank, u16, VectorClock)>, // stores a local copy of the queue sorted by ts
     formatted_strings:Vec<String>, // for debugging
     message_buffer: [OpNextAction; NUM_PROCS], // buffer to hold up to NUM_PROCS incoming messages
 }
@@ -110,12 +109,7 @@ impl Process {
     }
 
     pub(crate) fn handle_queue_op(&mut self, op: QueueOpReq) -> OpNextAction{
-        let mut res : OpNextAction = OpNextAction {
-            message: 0,
-            value: 0,
-            invoker: 0,
-            ts: VectorClock([0; NUM_PROCS]),
-        };
+        let mut res: OpNextAction = OpNextAction::default();
         match op.message {
             ENQ_INVOKE => {
                 self.enq_count = 0;
@@ -142,19 +136,19 @@ impl Process {
                 println!("{} got enq ack", self.index);
                 self.enq_count += 1;
                 if self.enq_count == NUM_PROCS as u16 {
-                    self.enqueue_local((self.index, op.value, self.message_buffer[self.index as usize].ts));
+                    self.enqueue_local((self.index, op.value, op.timestamp));
                     println!("Process {} finished enqueue", self.index);
                 }
                 res = OpNextAction{message: 9, value: op.value, invoker: self.index, ts: op.timestamp}
             }
             DEQ_INVOKE => {
-                println!("Process {} invoking deq", self.index);
                 self.vector_clock.0[self.index as usize] += 1;
+                println!("Process {} DEQ at ts {:?}", self.index, self.vector_clock);
                 res = OpNextAction{message: DEQ_REQ, value: op.value, invoker: self.index, ts: self.vector_clock}
             }
             DEQ_REQ => {
-                update_ts(&mut self.vector_clock.0, &op.timestamp.0);
                 println!("Process {} recv deq_req with ts: {:?} self: {:?}", self.index, op.timestamp.0, self.vector_clock.0);
+                update_ts(&mut self.vector_clock.0, &op.timestamp.0);
                 match compare_ts_ord(&op.timestamp.0, &self.vector_clock.0) {
                     Ordering::Less  if !contains_all_zeros(&op.timestamp.0)=> {
                         // unsafe
@@ -167,9 +161,9 @@ impl Process {
             }
             SAFE | UNSAFE => {
                 if op.message == UNSAFE {
-                    println!("Process {} recv UNSAFE from {}", self.index, op.sender);
+                    println!("Process {} recv UNSAFE from {} at ts {:?}", self.index, op.sender, op.timestamp.0);
                 }else{
-                    println!("Process {} recv SAFE from {}", self.index, op.sender);
+                    println!("Process {} recv SAFE from {} at ts {:?}", self.index, op.sender, op.timestamp.0);
                 }
 
                 let mut contains_req = false;
@@ -198,7 +192,7 @@ impl Process {
                 propagate_earlier_responses(&mut self.lists);
                 let ret_message:u16 = if op.message == UNSAFE {UNSAFE} else {SAFE};
 
-                for confirmation_list in self.lists.iter_mut() {
+                for (i, confirmation_list) in self.lists.iter_mut().enumerate() {
                     if !confirmation_list.response_list.contains(&0) && !confirmation_list.handled {
                         let mut pos: usize = 0;
                         for response in confirmation_list.response_list.iter() {
@@ -210,15 +204,17 @@ impl Process {
                         // TODO this deq_val needs to be option type to allow bottom
                         let deq_val = self.local_queue.remove(pos).unwrap().1;
                         println!("Process{} got {:?}", self.index, deq_val);
-
+                        update_unsafes(&mut self.lists, i+1);
                         return OpNextAction{message: ret_message, value: deq_val, invoker: self.index, ts: self.vector_clock};
                     }
+
                 }
+
                 return OpNextAction{message: ret_message, value: op.value, invoker: self.index, ts: self.vector_clock};
 
             }
             _ => {
-                res = OpNextAction{message: 0, value: op.value, invoker: self.index, ts: self.vector_clock}
+                res = OpNextAction::default();
             }
         }
         res
@@ -277,7 +273,7 @@ impl Process {
                     buff_index = op.sender as usize;
                 }
                 SAFE_UNSAFE => {
-                    buff_index = op.sender as usize; // processes should check if sender's buffer contains SAFE or UNSAFE
+                    buff_index = op.value as usize; // TODO fix this
                     op.message = if self.message_buffer[buff_index].message == UNSAFE
                     {UNSAFE} else {SAFE}
                 }

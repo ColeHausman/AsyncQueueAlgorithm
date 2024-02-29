@@ -36,7 +36,7 @@ fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct OpNextAction {
     pub message: u16,
     pub value: u16,
@@ -261,4 +261,12 @@ unsafe impl Equivalence for QueueOpReq {
 
         UserDatatype::structured(&counts, &displacements, &types)
     }
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct OpRequest {
+    message: u16,
+    value: Option<u16>,
+    sender: Rank,
+    receiver: Rank,
 }
