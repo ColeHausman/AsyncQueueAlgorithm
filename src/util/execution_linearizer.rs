@@ -1,7 +1,7 @@
 use mpi::environment::Universe;
 use mpi::Rank;
-use crate::util::constants::{DEQ_INVOKE, DEQ_REQ, ENQ_ACK, ENQ_INVOKE, ENQ_REQ, NUM_PROCS, SAFE, UNSAFE};
-use crate::util::message_structs::{OpNextAction, OpRequest, QueueOpReq, VectorClock};
+use crate::util::constants::{DEQ_INVOKE, DEQ_REQ, ENQ_ACK, ENQ_INVOKE, ENQ_REQ, NUM_PROCS};
+use crate::util::message_structs::{QueueOpReq, VectorClock};
 use crate::util::process::Process;
 
 
@@ -25,7 +25,7 @@ impl<'universe> DequeueFixedLinearization<'universe> {
     pub(crate) fn deq_invoke(&mut self, invoking: Rank, process: &mut Process) {
         self.invoker = invoking;
         if process.index == invoking {
-            self.message_buffer = process.execute_async_send_receive(self.universe, QueueOpReq{
+            self.message_buffer = process.sync_send_receive(self.universe, QueueOpReq{
                 message: DEQ_INVOKE,
                 value: 0,
                 sender: invoking,
@@ -34,7 +34,7 @@ impl<'universe> DequeueFixedLinearization<'universe> {
             }).message;
             self.deq_ts = process.vector_clock;
         }else{
-            process.execute_async_send_receive(self.universe, QueueOpReq{
+            process.sync_send_receive(self.universe, QueueOpReq{
                 message: DEQ_INVOKE,
                 value: 0,
                 sender: invoking,
@@ -46,7 +46,7 @@ impl<'universe> DequeueFixedLinearization<'universe> {
 
     pub(crate) fn deq_req(&mut self, receiver: Rank, process: &mut Process) {
         if process.index == receiver {
-            let response = process.execute_async_send_receive(self.universe, QueueOpReq{
+            let response = process.sync_send_receive(self.universe, QueueOpReq{
                 message: DEQ_REQ,
                 value: 0,
                 sender: self.invoker,
@@ -56,7 +56,7 @@ impl<'universe> DequeueFixedLinearization<'universe> {
             self.message_buffer = response.message;
             self.deq_ts = response.ts;
         }else {
-            process.execute_async_send_receive(self.universe, QueueOpReq{
+            process.sync_send_receive(self.universe, QueueOpReq{
                 message: DEQ_REQ,
                 value: 0,
                 sender: self.invoker,
@@ -68,15 +68,15 @@ impl<'universe> DequeueFixedLinearization<'universe> {
 
     pub(crate) fn safe_unsafe(&mut self, sender: Rank, receiver: Rank, process: &mut Process) {
         if process.index == receiver {
-            self.message_buffer = process.execute_async_send_receive(self.universe, QueueOpReq{
+            self.message_buffer = process.sync_send_receive(self.universe, QueueOpReq{
                 message: self.message_buffer,
                 value: 0,
                 sender,
                 receiver,
                 timestamp: self.deq_ts
             }).message;
-        }else {
-            process.execute_async_send_receive(self.universe, QueueOpReq{
+        } else {
+            process.sync_send_receive(self.universe, QueueOpReq{
                 message: self.message_buffer,
                 value: 0,
                 sender,
@@ -115,7 +115,7 @@ impl<'universe> EnqueueFixedLinearization<'universe> {
     pub(crate) fn enq_invoke(&mut self, invoking: Rank, value: u16, process: &mut Process) {
         self.invoker = invoking;
         if process.index == invoking {
-            let response = process.execute_async_send_receive(self.universe, QueueOpReq{
+            let response = process.sync_send_receive(self.universe, QueueOpReq{
                 message: ENQ_INVOKE,
                 value,
                 sender: invoking,
@@ -123,10 +123,10 @@ impl<'universe> EnqueueFixedLinearization<'universe> {
                 timestamp: process.vector_clock
             });
             self.message_buffer = response.message;
-            self.value = response.value;
+            self.value = response.value.unwrap();
             self.enq_ts = process.vector_clock;
-        }else{
-            process.execute_async_send_receive(self.universe, QueueOpReq{
+        } else {
+            process.sync_send_receive(self.universe, QueueOpReq{
                 message: ENQ_INVOKE,
                 value,
                 sender: invoking,
@@ -138,18 +138,18 @@ impl<'universe> EnqueueFixedLinearization<'universe> {
 
     pub(crate) fn enq_req(&mut self, receiver: Rank, process: &mut Process) {
         if process.index == receiver {
-            let response = process.execute_async_send_receive(self.universe, QueueOpReq{
+            let response = process.sync_send_receive(self.universe, QueueOpReq{
                 message: ENQ_REQ,
                 value: self.value,
                 sender: self.invoker,
                 receiver,
                 timestamp: self.enq_ts
             });
-            self.value = response.value;
+            self.value = response.value.unwrap();
             self.message_buffer = response.message;
             self.enq_ts = response.ts;
-        }else {
-            process.execute_async_send_receive(self.universe, QueueOpReq{
+        } else {
+            process.sync_send_receive(self.universe, QueueOpReq{
                 message: ENQ_REQ,
                 value: self.value,
                 sender: self.invoker,
@@ -161,15 +161,15 @@ impl<'universe> EnqueueFixedLinearization<'universe> {
 
     pub(crate) fn enq_ack(&mut self, sender: Rank, process: &mut Process) {
         if process.index == self.invoker {
-            self.message_buffer = process.execute_async_send_receive(self.universe, QueueOpReq{
+            self.message_buffer = process.sync_send_receive(self.universe, QueueOpReq{
                 message: ENQ_ACK,
                 value: self.value,
                 sender,
                 receiver: self.invoker,
                 timestamp: self.enq_ts
             }).message;
-        }else {
-            process.execute_async_send_receive(self.universe, QueueOpReq{
+        } else {
+            process.sync_send_receive(self.universe, QueueOpReq{
                 message: ENQ_ACK,
                 value: self.value,
                 sender,

@@ -39,7 +39,7 @@ fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct OpNextAction {
     pub message: u16,
-    pub value: u16,
+    pub value: Option<u16>,
     pub invoker: Rank,
     pub ts: VectorClock,
 }
